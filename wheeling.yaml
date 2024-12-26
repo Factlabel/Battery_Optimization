@@ -1,0 +1,126 @@
+areas:
+  Hokkaido:
+    SHV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    HV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    LV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+
+  Tohoku:
+    SHV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    HV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    LV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+
+  Tokyo:
+    SHV:
+      loss_rate: 0.05
+      wheeling_base_charge: 1000
+      wheeling_usage_fee: 30
+    HV:
+      loss_rate: 0.03
+      wheeling_base_charge: 800
+      wheeling_usage_fee: 20
+    LV:
+      loss_rate: 0.02
+      wheeling_base_charge: 500
+      wheeling_usage_fee: 10
+
+  Chubu:
+    SHV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    HV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    LV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+
+  Hokuriku:
+    SHV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    HV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    LV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+
+  Kansai:
+    SHV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    HV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    LV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+
+  Chugoku:
+    SHV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    HV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    LV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+
+  Shikoku:
+    SHV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    HV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+    LV:
+      loss_rate: null
+      wheeling_base_charge: null
+      wheeling_usage_fee: null
+
+  Kyushu:
+    SHV:
+      loss_rate: 0.013
+      wheeling_base_charge: 571.44
+      wheeling_usage_fee: 5.58
+    HV:
+      loss_rate: 0.032
+      wheeling_base_charge: 553.28
+      wheeling_usage_fee: 2.61
+    LV:
+      loss_rate: 0.086
+      wheeling_base_charge: 482.05
+      wheeling_usage_fee: 1.27

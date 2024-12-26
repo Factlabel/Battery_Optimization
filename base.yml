@@ -1,0 +1,25 @@
+battery:
+  # 充電→放電のサイクルで発生するバッテリー自体の損失率 (例: 0.05 = 5%)
+  loss_rate: 0.05
+
+  # バッテリー過放電防止用最小SOC (例: 0.1 = 10%)
+  min_residual_soc: 0.1
+
+  # 充放電サイクル上限の設定　(上限なしの場合は0)
+  cycle_setting:
+    day: 1
+    week: 0
+    month: 0
+    year: 365
+
+  # バッテリー出力 kW
+  power_kW: 2000
+
+  # バッテリー容量 kWh
+  capacity_kWh: 7520
+
+  # バッテリーの劣化率 (例: 年率3%)
+  annual_degradation_rate: 0.03
+
+  # 予測対象スロット (前日入札前の時点で何スロット先まで予測しているか)
+  forecast_period: 48

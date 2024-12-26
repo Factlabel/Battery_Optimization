@@ -1,279 +1,284 @@
-import streamlit as st
 import pandas as pd
+import numpy as np
 import pulp
-import matplotlib.pyplot as plt
-import seaborn as sns
-from io import StringIO
+import yaml
+import os
 
-# Set the page configuration
-st.set_page_config(page_title="Battery Optimizer alpha", layout="wide")
+# ====================================
+# 各種設定 (PyCharm のコードからファイルパスを取得)
+# ====================================
+BASE_YML_PATH = "/Users/tkshsgw/crypto_trading/crypto_trading/Battery_Optimization/base.yml"
+WHEELING_YML_PATH = "/Users/tkshsgw/crypto_trading/crypto_trading/Battery_Optimization/wheeling.yaml"
+DATA_CSV_PATH = "/Users/tkshsgw/Desktop/Battery Optimization Project/JWAプライス予測サンプルデータシミュレーション用のコピー.csv"
+OUTPUT_CSV_PATH = "optimal_transactions.csv"
 
-# Title
-st.title("Battery Optimizer alpha")
+def main():
+    # 1) 設定ファイルの読み込み
+    if not os.path.exists(BASE_YML_PATH):
+        print(f"ERROR: {BASE_YML_PATH} が見つかりません。")
+        return
+    if not os.path.exists(WHEELING_YML_PATH):
+        print(f"ERROR: {WHEELING_YML_PATH} が見つかりません。")
+        return
 
-# Description
-st.markdown("""
-This application optimizes battery usage based on uploaded CSV data.
-Upload your CSV file and click "Optimize" to see the results displayed as graphs.
-""")
+    with open(BASE_YML_PATH, "r", encoding="utf-8") as f:
+        base_yaml = yaml.safe_load(f)
+    with open(WHEELING_YML_PATH, "r", encoding="utf-8") as f:
+        wheeling_yaml = yaml.safe_load(f)
 
-# File uploader
-uploaded_file = st.file_uploader("Upload your CSV file here", type=["csv"])
+    battery_cfg = base_yaml.get("battery", {})
+    battery_loss_rate = battery_cfg.get("loss_rate", 0.05)
+    battery_power_kW = battery_cfg.get("power_kW", 50)
+    battery_capacity_kWh = battery_cfg.get("capacity_kWh", 200)
 
-if uploaded_file is not None:
-    try:
-        # Read the CSV file
-        df = pd.read_csv(uploaded_file)
+    # forecast_period
+    forecast_period = battery_cfg.get("forecast_period", 48)
 
-        # Check for required columns
-        required_columns = {'date', 'EPRX_slot', 'DA_prediction', 'IB_prediction', 'EPRX_prediction', 'DA_slot'}
-        if not required_columns.issubset(df.columns):
-            st.error(f"The uploaded CSV does not contain the required columns: {required_columns}")
-        else:
-            st.success("File uploaded successfully.")
+    region_settings = wheeling_yaml.get("Kyushu", {})
+    hv_settings = region_settings.get("HV", {})
+    wheeling_loss_rate = hv_settings.get("loss_rate", 0.03)
+    wheeling_base_charge = hv_settings.get("wheeling_base_charge", 1000)
+    wheeling_usage_fee = hv_settings.get("wheeling_usage_fee", 3)
 
-            # Optimize button
-            if st.button("Optimize"):
-                # Execute optimization
-                with st.spinner('Running optimization...'):
-                    # Constants
-                    CHARGE_CAPACITY = 1000  # Maximum battery capacity (kWh)
-                    CHARGE_DISCHARGE_SPEED = 166  # Charge/discharge speed per slot (kWh)
+    # 2) CSVの読み込み
+    if not os.path.exists(DATA_CSV_PATH):
+        print(f"ERROR: {DATA_CSV_PATH} が見つかりません。")
+        return
+    df_all = pd.read_csv(DATA_CSV_PATH)
 
-                    # Group data by date
-                    grouped = df.groupby('date')
+    required_cols = {
+        "date", "slot",
+        "JEPX_prediction", "JEPX_actual",
+        "EPRX1_prediction", "EPRX1_actual",
+        "EPRX3_prediction", "EPRX3_actual",
+        "imbalance"
+    }
+    if not required_cols.issubset(df_all.columns):
+        print(f"ERROR: CSVに必要な列が不足しています: {required_cols}")
+        return
 
-                    # Initialize results list
-                    results = []
+    # 時系列順にソート
+    df_all.sort_values(by=["date", "slot"], inplace=True, ignore_index=True)
 
-                    for date, group in grouped:
-                        group = group.reset_index(drop=True)
-                        num_slots = len(group)
+    total_slots = len(df_all)
+    num_days = (total_slots + forecast_period - 1) // forecast_period
 
-                        # Identify unique EPRX_slots and map each slot to the indices it covers
-                        eprx_slots = group['EPRX_slot'].unique()
-                        eprx_slot_dict = {slot: group[group['EPRX_slot'] == slot].index.tolist() for slot in eprx_slots}
+    print(f"全スロット: {total_slots}, forecast_period={forecast_period}, => {num_days}日分 として最適化")
 
-                        # Define the optimization problem
-                        prob = pulp.LpProblem(f"Battery_Optimization_{date}", pulp.LpMaximize)
+    carry_over_soc = 0.0
+    all_transactions = []
+    total_profit = 0.0
 
-                        # Define decision variables
-                        charge = pulp.LpVariable.dicts("Charge", range(num_slots), cat='Binary')
-                        discharge_da = pulp.LpVariable.dicts("Discharge_DA", range(num_slots), cat='Binary')
-                        discharge_ib = pulp.LpVariable.dicts("Discharge_IB", range(num_slots), cat='Binary')
-                        discharge_eprx = pulp.LpVariable.dicts("Discharge_EPRX", eprx_slots, cat='Binary')
-                        battery = pulp.LpVariable.dicts("Battery", range(num_slots + 1), lowBound=0,
-                                                        upBound=CHARGE_CAPACITY, cat='Continuous')
+    for day_idx in range(num_days):
+        start_i = day_idx * forecast_period
+        end_i   = start_i + forecast_period
+        if start_i >= total_slots:
+            break
+        if end_i > total_slots:
+            end_i = total_slots
 
-                        # Initial battery state
-                        prob += battery[0] == 0, "Initial_Battery_State"
+        df_day = df_all.iloc[start_i:end_i].copy()
+        df_day.reset_index(drop=True, inplace=True)
+        day_slots = len(df_day)
+        if day_slots == 0:
+            break
 
-                        # Total charge constraint
-                        total_charge = pulp.lpSum([charge[i] * CHARGE_DISCHARGE_SPEED for i in range(num_slots)])
-                        prob += total_charge <= CHARGE_CAPACITY, "Total_Charge_Limit"
+        print(f"\n=== Day {day_idx+1}: スロット {start_i}~{end_i-1} ({day_slots}スロット) ===")
 
-                        # Constraints for each slot
-                        for i in range(num_slots):
-                            # Ensure that a slot cannot have both charging and discharging
-                            prob += charge[i] + discharge_da[i] + discharge_ib[
-                                i] <= 1, f"Charge_Discharge_Exclusivity_Slot_{i}"
+        prob = pulp.LpProblem(f"Battery_Optimization_Day{day_idx+1}", pulp.LpMaximize)
 
-                            # Discharge amount cannot exceed the current battery level
-                            prob += (discharge_da[i] + discharge_ib[i]) * CHARGE_DISCHARGE_SPEED <= battery[
-                                i], f"Discharge_Limit_Slot_{i}"
+        battery_soc = pulp.LpVariable.dicts(f"soc_day{day_idx+1}", range(day_slots+1),
+                                            lowBound=0, upBound=battery_capacity_kWh, cat=pulp.LpContinuous)
 
-                            # Battery level transitions
-                            prob += battery[i + 1] == battery[i] + (CHARGE_DISCHARGE_SPEED * charge[i]) - (
-                                        CHARGE_DISCHARGE_SPEED * (
-                                            discharge_da[i] + discharge_ib[i])), f"Battery_Balance_Slot_{i}"
+        charge    = pulp.LpVariable.dicts(f"charge_day{day_idx+1}", range(day_slots), cat=pulp.LpBinary)
+        discharge = pulp.LpVariable.dicts(f"discharge_day{day_idx+1}", range(day_slots), cat=pulp.LpBinary)
+        eprx1     = pulp.LpVariable.dicts(f"eprx1_day{day_idx+1}", range(day_slots), cat=pulp.LpBinary)
+        eprx3     = pulp.LpVariable.dicts(f"eprx3_day{day_idx+1}", range(day_slots), cat=pulp.LpBinary)
 
-                            # Battery level constraints
-                            prob += battery[i + 1] <= CHARGE_CAPACITY, f"Battery_Capacity_Slot_{i}"
-                            prob += battery[i + 1] >= 0, f"Battery_Min_Slot_{i}"
+        half_power_kWh = battery_power_kW * 0.5
 
-                        # Constraints for EPRX_slot discharges
-                        for s in eprx_slots:
-                            slots_in_s = eprx_slot_dict[s]
+        # (A) 排他制約
+        for i in range(day_slots):
+            prob += (charge[i] + discharge[i] + eprx1[i] + eprx3[i]) <= 1
 
-                            for i in slots_in_s:
-                                prob += discharge_ib[i] >= discharge_eprx[s], f"EPRX_Discharge_Start_Slot_{i}_Slot_{s}"
-                                prob += discharge_ib[i] <= discharge_eprx[s], f"EPRX_Discharge_End_Slot_{i}_Slot_{s}"
+        # (B) SOC遷移
+        for i in range(day_slots):
+            next_soc = (battery_soc[i]
+                        + charge[i]*half_power_kWh
+                        - discharge[i]*half_power_kWh
+                        - eprx3[i]*half_power_kWh)
+            prob += battery_soc[i+1] == next_soc
 
-                            first_slot_in_s = slots_in_s[0]
-                            prob += battery[first_slot_in_s] >= 996 * discharge_eprx[
-                                s], f"EPRX_Battery_Limit_Slot_{first_slot_in_s}_Slot_{s}"
+        # 初期バッテリー量
+        prob += battery_soc[0] == carry_over_soc, f"InitSOC_Day{day_idx+1}"
 
-                        # Objective function: Maximize profit
-                        profit = pulp.lpSum([
-                            discharge_da[i] * group.loc[i, 'DA_prediction'] * CHARGE_DISCHARGE_SPEED +
-                            discharge_ib[i] * group.loc[i, 'IB_prediction'] * CHARGE_DISCHARGE_SPEED -
-                            charge[i] * group.loc[i, 'DA_prediction'] * CHARGE_DISCHARGE_SPEED
-                            for i in range(num_slots)
-                        ]) + pulp.lpSum([
-                            discharge_eprx[s] * pulp.lpSum([
-                                (group.loc[i, 'EPRX_prediction'] + group.loc[
-                                    i, 'IB_prediction']) * CHARGE_DISCHARGE_SPEED
-                                for i in eprx_slot_dict[s]
-                            ])
-                            for s in eprx_slots
-                        ])
-                        prob += profit, "Total_Profit"
+        # EPRX1 (1日合計6スロット) + 40~60% 制約
+        bigM = 999999
+        prob += pulp.lpSum(eprx1[i] for i in range(day_slots)) <= 6
+        for i in range(day_slots):
+            soc_i = battery_soc[i]
+            prob += soc_i >= 0.4*battery_capacity_kWh - (1 - eprx1[i])*bigM
+            prob += soc_i <= 0.6*battery_capacity_kWh + (1 - eprx1[i])*bigM
 
-                        # Solve the optimization problem
-                        prob.solve()
+        # EPRX3 => SoC>= half_power_kWh
+        for i in range(day_slots):
+            prob += battery_soc[i] >= half_power_kWh - (1 - eprx3[i])*bigM
 
-                        # Check if an optimal solution is found
-                        if pulp.LpStatus[prob.status] != 'Optimal':
-                            st.warning(f"No optimal solution found for date {date}.")
-                            continue
+        # 1日最大充電量 <= capacity_kWh
+        prob += (pulp.lpSum([charge[i] for i in range(day_slots)]) * half_power_kWh) <= battery_capacity_kWh
 
-                        # Record transaction details
-                        transactions = []
-                        battery_levels = [0]  # Initialize with initial battery level
+        # prediction=0 => eprx1,eprx3=0
+        for i in range(day_slots):
+            e1pred = df_day.loc[i,"EPRX1_prediction"]
+            e3pred = df_day.loc[i,"EPRX3_prediction"]
+            if pd.isna(e1pred) or e1pred==0:
+                prob += eprx1[i] <= 0
+            if pd.isna(e3pred) or e3pred==0:
+                prob += eprx3[i] <= 0
 
-                        for i in range(num_slots):
-                            action = "idle"  # Default action is idle
-                            if pulp.value(charge[i]) == 1:
-                                action = "charge"
-                            elif pulp.value(discharge_da[i]) == 1:
-                                action = "discharge_DA"
-                            elif pulp.value(discharge_ib[i]) == 1:
-                                # Check if discharging for EPRX revenue
-                                is_eprx = False
-                                for s in eprx_slots:
-                                    if i in eprx_slot_dict[s] and pulp.value(discharge_eprx[s]) == 1:
-                                        is_eprx = True
-                                        eprx_slot = s
-                                        break
-                                if is_eprx:
-                                    action = "discharge_EPRX"
-                                else:
-                                    action = "discharge_IB"
+        # 目的関数(予測価格)
+        profit_terms = []
+        for i in range(day_slots):
+            jpred= df_day.loc[i,"JEPX_prediction"] if not pd.isna(df_day.loc[i,"JEPX_prediction"]) else 0.0
+            e1pred= df_day.loc[i,"EPRX1_prediction"] if not pd.isna(df_day.loc[i,"EPRX1_prediction"]) else 0.0
+            e3pred= df_day.loc[i,"EPRX3_prediction"] if not pd.isna(df_day.loc[i,"EPRX3_prediction"]) else 0.0
+            imb   = df_day.loc[i,"imbalance"]        if not pd.isna(df_day.loc[i,"imbalance"]) else 0.0
 
-                            # Track current battery level
-                            current_battery = pulp.value(battery[i + 1])
-                            battery_levels.append(current_battery)
+            cost_c  = jpred*(half_power_kWh/(1-wheeling_loss_rate))* charge[i]
+            rev_d   = jpred*(half_power_kWh*(1 - battery_loss_rate))* discharge[i]
+            rev_e1  = e1pred*battery_power_kW* eprx1[i]
+            rev_e3  = e3pred*battery_power_kW* eprx3[i]
+            rev_e3 += (half_power_kWh*(1-battery_loss_rate))* imb* eprx3[i]
 
-                            # Record transaction details for this slot
-                            txn = {
-                                'slot': group.loc[i, 'DA_slot'],
-                                'action': action,
-                                'amount_kWh': CHARGE_DISCHARGE_SPEED if action != "idle" else 0,
-                                'price_yen': 0,
-                                'cost_yen': 0,
-                                'revenue_yen': 0,
-                                'eprx_revenue_yen': 0,
-                                'battery_level_kWh': current_battery
-                            }
+            slot_profit= -cost_c + rev_d + rev_e1 + rev_e3
+            profit_terms.append(slot_profit)
 
-                            # Update transaction details based on action type
-                            if action == "charge":
-                                txn['price_yen'] = group.loc[i, 'DA_prediction']
-                                txn['cost_yen'] = CHARGE_DISCHARGE_SPEED * group.loc[i, 'DA_prediction']
-                            elif action == "discharge_DA":
-                                txn['price_yen'] = group.loc[i, 'DA_prediction']
-                                txn['revenue_yen'] = CHARGE_DISCHARGE_SPEED * group.loc[i, 'DA_prediction']
-                            elif action == "discharge_IB":
-                                txn['price_yen'] = group.loc[i, 'IB_prediction']
-                                txn['revenue_yen'] = CHARGE_DISCHARGE_SPEED * group.loc[i, 'IB_prediction']
-                            elif action == "discharge_EPRX":
-                                txn['price_yen'] = group.loc[i, 'IB_prediction']
-                                txn['revenue_yen'] = CHARGE_DISCHARGE_SPEED * group.loc[i, 'IB_prediction']
-                                txn['eprx_revenue_yen'] = CHARGE_DISCHARGE_SPEED * group.loc[i, 'EPRX_prediction']
+        prob += pulp.lpSum(profit_terms), f"TotalProfit_Day{day_idx+1}"
 
-                            transactions.append(txn)
+        # ソルバー実行
+        solver = pulp.PULP_CBC_CMD(msg=0, threads=8)
+        prob.solve(solver)
 
-                        # Summarize results
-                        total_profit_value = pulp.value(prob.objective)
-                        total_charge = sum([txn['amount_kWh'] for txn in transactions if txn['action'] == 'charge'])
-                        total_discharge = sum(
-                            [txn['amount_kWh'] for txn in transactions if 'discharge' in txn['action']])
+        status = pulp.LpStatus[prob.status]
+        print(f"Day {day_idx+1} solve status: {status}")
+        if status!="Optimal":
+            print("Warning: Dayの最適解が見つかりませんでした (skip).")
+            continue
 
-                        # Add results to the list
-                        results.append({
-                            'date': date,
-                            'Total_Profit_yen': total_profit_value,
-                            'Total_Charge_kWh': total_charge,
-                            'Total_Discharge_kWh': total_discharge,
-                            'Transactions': transactions,
-                            'Battery_Levels': battery_levels,
-                            'Group': group  # Keep group for plotting prices
-                        })
+        # 実際の収益計算 (日次)
+        day_day_profit = 0.0
+        day_transactions = []
 
-                    # Display results
-                    total_strategy_profit = 0
-                    for result in results:
-                        st.subheader(f"=== Date: {result['date']} ===")
-                        st.write(f"**Total Profit**: {result['Total_Profit_yen']:.2f} Yen")
-                        st.write(f"**Total Charge**: {result['Total_Charge_kWh']} kWh")
-                        st.write(f"**Total Discharge**: {result['Total_Discharge_kWh']} kWh")
+        final_soc = pulp.value(battery_soc[day_slots])
+        print(f"Day {day_idx+1} final SOC= {final_soc:.2f} kWh")
+        carry_over_soc = final_soc
 
-                        # Transaction details as DataFrame
-                        txn_df = pd.DataFrame(result['Transactions'])
-                        st.write("**Transaction Details**")
-                        st.dataframe(txn_df)
+        half_kwh = half_power_kWh
 
-                        # Battery Level and Prices Graph
-                        fig, ax1 = plt.subplots(figsize=(12, 6))
+        for i in range(day_slots):
+            c_val= pulp.value(charge[i])
+            d_val= pulp.value(discharge[i])
+            e1_val= pulp.value(eprx1[i])
+            e3_val= pulp.value(eprx3[i])
 
-                        # Bar plot for Battery Level
-                        slots = range(len(result['Battery_Levels']))
-                        ax1.bar(slots, result['Battery_Levels'], color='skyblue', label='Battery Level (kWh)',
-                                alpha=0.6)
-                        ax1.set_xlabel('Slot')
-                        ax1.set_ylabel('Battery Level (kWh)', color='skyblue')
-                        ax1.tick_params(axis='y', labelcolor='skyblue')
+            act="idle"
+            if e1_val>0.5:
+                act="EPRX1"
+            elif e3_val>0.5:
+                act="EPRX3"
+            elif c_val>0.5:
+                act="charge"
+            elif d_val>0.5:
+                act="discharge"
 
-                        # Line plots for DA, IB, and EPRX Prices
-                        ax2 = ax1.twinx()
-                        da_prices = result['Group']['DA_prediction'].tolist()
-                        ib_prices = result['Group']['IB_prediction'].tolist()
-                        eprx_prices = result['Group']['EPRX_prediction'].tolist()
+            # 各スロットごとのPnL
+            j_a= df_day.loc[i,"JEPX_actual"] if not pd.isna(df_day.loc[i,"JEPX_actual"]) else 0.0
+            e1_a= df_day.loc[i,"EPRX1_actual"] if not pd.isna(df_day.loc[i,"EPRX1_actual"]) else 0.0
+            e3_a= df_day.loc[i,"EPRX3_actual"] if not pd.isna(df_day.loc[i,"EPRX3_actual"]) else 0.0
+            imb_a= df_day.loc[i,"imbalance"] if not pd.isna(df_day.loc[i,"imbalance"]) else 0.0
 
-                        ax2.plot(range(len(da_prices)), da_prices, color='red', marker='o',
-                                 label='JEPX DA Price (Yen/kWh)')
-                        ax2.plot(range(len(ib_prices)), ib_prices, color='green', marker='x', linestyle='--',
-                                 label='Imbalance Price (Yen/kWh)')
-                        ax2.plot(range(len(eprx_prices)), eprx_prices, color='purple', marker='^', linestyle='-.',
-                                 label='EPRX Prediction (Yen/kWh)')
+            # 個別PnL
+            jepx_pnl = 0.0
+            eprx1_pnl= 0.0
+            eprx3_pnl= 0.0
+            wheeling_cost= 0.0
 
-                        ax2.set_ylabel('Price (Yen/kWh)', color='black')
-                        ax2.tick_params(axis='y', labelcolor='black')
+            if act=="charge":
+                cost= j_a*(half_kwh/(1-wheeling_loss_rate))
+                jepx_pnl -= cost
+                wheeling_cost += cost * 0
+            elif act=="discharge":
+                rev= j_a*(half_kwh*(1-battery_loss_rate))
+                jepx_pnl += rev
+            elif act=="EPRX1":
+                eprx1_pnl += e1_a*battery_power_kW
+            elif act=="EPRX3":
+                rev= e3_a*battery_power_kW
+                rev+= (half_kwh*(1-battery_loss_rate))*imb_a
+                eprx3_pnl += rev
 
-                        # Titles and Legends
-                        plt.title(f"Battery Level and Prices Over Slots ({result['date']})")
-                        fig.tight_layout()
+            slot_total_pnl = jepx_pnl + eprx1_pnl + eprx3_pnl - wheeling_cost
+            day_day_profit += slot_total_pnl
 
-                        # Combine legends from both axes
-                        lines_1, labels_1 = ax1.get_legend_handles_labels()
-                        lines_2, labels_2 = ax2.get_legend_handles_labels()
-                        ax2.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
+            row={
+                "date": df_day.loc[i,"date"],
+                "slot": int(df_day.loc[i,"slot"]),
+                "action": act,
+                "battery_level_kWh": pulp.value(battery_soc[i+1]),
+                "JEPX_prediction": df_day.loc[i,"JEPX_prediction"],
+                "JEPX_actual": df_day.loc[i,"JEPX_actual"],
+                "EPRX1_prediction": df_day.loc[i,"EPRX1_prediction"],
+                "EPRX1_actual": df_day.loc[i,"EPRX1_actual"],
+                "EPRX3_prediction": df_day.loc[i,"EPRX3_prediction"],
+                "EPRX3_actual": df_day.loc[i,"EPRX3_actual"],
+                "imbalance": df_day.loc[i,"imbalance"],
 
-                        st.pyplot(fig)
+                "JEPX_PnL": jepx_pnl,
+                "EPRX1_PnL": eprx1_pnl,
+                "EPRX3_PnL": eprx3_pnl,
+                "Wheeling_charges": wheeling_cost,
+                "Total_Daily_PnL": slot_total_pnl
+            }
+            day_transactions.append(row)
 
-                        total_strategy_profit += result['Total_Profit_yen']
+        all_transactions.extend(day_transactions)
+        total_profit += day_day_profit
+        print(f"Day {day_idx+1} PL= {day_day_profit:.2f}, 累計= {total_profit:.2f}")
 
-                    st.markdown(f"## === Total Profit Across All Days: {total_strategy_profit:.2f} Yen ===")
+    # 全日終了後に "wheeling費用" 計算 (概算)
+    total_charge_kWh=0.0
+    total_discharge_kWh=0.0
+    for r in all_transactions:
+        if r["action"]=="charge":
+            total_charge_kWh += half_power_kWh
+        elif r["action"]=="discharge":
+            total_discharge_kWh += half_power_kWh
+        elif r["action"]=="EPRX3":
+            total_discharge_kWh += half_power_kWh
 
-                    # Optionally save transaction data to CSV
-                    all_transactions = []
-                    for result in results:
-                        date = result['date']
-                        for txn in result['Transactions']:
-                            entry = {'date': date}
-                            entry.update(txn)
-                            all_transactions.append(entry)
+    diff_kWh= max(0, total_charge_kWh - total_discharge_kWh)
+    monthly_fee= wheeling_base_charge*battery_power_kW + wheeling_usage_fee* diff_kWh
+    final_profit2= total_profit - monthly_fee
 
-                    optimal_df = pd.DataFrame(all_transactions)
-                    csv = optimal_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Optimization Results as CSV",
-                        data=csv,
-                        file_name='optimal_transactions.csv',
-                        mime='text/csv',
-                    )
+    print("======================================")
+    print(f"全期間(全日) 累計収益(実際価格) = {total_profit:.2f} 円")
+    print(f"推定 wheeling費用(概算) = {monthly_fee:.2f} 円")
+    print(f"最終的な純収益 = {final_profit2:.2f} 円")
+    print("======================================")
 
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
-else:
-    st.info("Please upload a CSV file to perform optimization.")
+    df_out = pd.DataFrame(all_transactions, columns=[
+        "date", "slot", "action", "battery_level_kWh",
+        "JEPX_prediction", "JEPX_actual",
+        "EPRX1_prediction", "EPRX1_actual",
+        "EPRX3_prediction", "EPRX3_actual",
+        "imbalance",
+        "JEPX_PnL", "EPRX1_PnL", "EPRX3_PnL",
+        "Wheeling_charges",
+        "Total_Daily_PnL"
+    ])
+    df_out.to_csv(OUTPUT_CSV_PATH, index=False, encoding="utf-8")
+    print(f"最適化結果 (day-by-day) を {OUTPUT_CSV_PATH} に出力しました。")
+
+
+if __name__ == "__main__":
+    main()
