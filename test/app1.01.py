@@ -3,27 +3,36 @@ import numpy as np
 import pulp
 import yaml
 import os
+from pathlib import Path  # 追加
 
+## ====================================
+# 各種設定
 # ====================================
-# 各種設定 (PyCharm のコードからファイルパスを取得)
-# ====================================
-BASE_YML_PATH = "/Users/tkshsgw/crypto_trading/crypto_trading/Battery_Optimization/base.yml"
-WHEELING_YML_PATH = "/Users/tkshsgw/crypto_trading/crypto_trading/Battery_Optimization/wheeling.yaml"
-DATA_CSV_PATH = "/Users/tkshsgw/Desktop/Battery Optimization Project/JWAプライス予測サンプルデータシミュレーション用のコピー.csv"
-OUTPUT_CSV_PATH = "optimal_transactions.csv"
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# YAML
+BASE_YML_PATH = SCRIPT_DIR.parent / "configs" / "base.yml"
+WHEELING_YML_PATH = SCRIPT_DIR.parent / "configs" / "wheeling.yaml"
+
+# CSV
+DATA_CSV_PATH = SCRIPT_DIR.parent / "data" / "price_forecast_sample.csv"
+
+# 出力ファイル
+OUTPUT_CSV_PATH = SCRIPT_DIR / "optimal_transactions.csv"
 
 def main():
     # 1) 設定ファイルの読み込み
-    if not os.path.exists(BASE_YML_PATH):
+    if not BASE_YML_PATH.exists():
         print(f"ERROR: {BASE_YML_PATH} が見つかりません。")
         return
-    if not os.path.exists(WHEELING_YML_PATH):
+    if not WHEELING_YML_PATH.exists():
         print(f"ERROR: {WHEELING_YML_PATH} が見つかりません。")
         return
 
-    with open(BASE_YML_PATH, "r", encoding="utf-8") as f:
+    with BASE_YML_PATH.open("r", encoding="utf-8") as f:
         base_yaml = yaml.safe_load(f)
-    with open(WHEELING_YML_PATH, "r", encoding="utf-8") as f:
+    with WHEELING_YML_PATH.open("r", encoding="utf-8") as f:
         wheeling_yaml = yaml.safe_load(f)
 
     battery_cfg = base_yaml.get("battery", {})
@@ -31,7 +40,6 @@ def main():
     battery_power_kW = battery_cfg.get("power_kW", 50)
     battery_capacity_kWh = battery_cfg.get("capacity_kWh", 200)
 
-    # forecast_period
     forecast_period = battery_cfg.get("forecast_period", 48)
 
     region_settings = wheeling_yaml.get("Kyushu", {})
@@ -41,7 +49,7 @@ def main():
     wheeling_usage_fee = hv_settings.get("wheeling_usage_fee", 3)
 
     # 2) CSVの読み込み
-    if not os.path.exists(DATA_CSV_PATH):
+    if not DATA_CSV_PATH.exists():
         print(f"ERROR: {DATA_CSV_PATH} が見つかりません。")
         return
     df_all = pd.read_csv(DATA_CSV_PATH)
@@ -120,7 +128,7 @@ def main():
             prob += soc_i >= 0.4*battery_capacity_kWh - (1 - eprx1[i])*bigM
             prob += soc_i <= 0.6*battery_capacity_kWh + (1 - eprx1[i])*bigM
 
-        # EPRX3 => SoC>= half_power_kWh
+        # EPRX3 => SoC >= half_power_kWh
         for i in range(day_slots):
             prob += battery_soc[i] >= half_power_kWh - (1 - eprx3[i])*bigM
 
@@ -139,10 +147,10 @@ def main():
         # 目的関数(予測価格)
         profit_terms = []
         for i in range(day_slots):
-            jpred= df_day.loc[i,"JEPX_prediction"] if not pd.isna(df_day.loc[i,"JEPX_prediction"]) else 0.0
-            e1pred= df_day.loc[i,"EPRX1_prediction"] if not pd.isna(df_day.loc[i,"EPRX1_prediction"]) else 0.0
-            e3pred= df_day.loc[i,"EPRX3_prediction"] if not pd.isna(df_day.loc[i,"EPRX3_prediction"]) else 0.0
-            imb   = df_day.loc[i,"imbalance"]        if not pd.isna(df_day.loc[i,"imbalance"]) else 0.0
+            jpred  = df_day.loc[i,"JEPX_prediction"] if not pd.isna(df_day.loc[i,"JEPX_prediction"]) else 0.0
+            e1pred = df_day.loc[i,"EPRX1_prediction"] if not pd.isna(df_day.loc[i,"EPRX1_prediction"]) else 0.0
+            e3pred = df_day.loc[i,"EPRX3_prediction"] if not pd.isna(df_day.loc[i,"EPRX3_prediction"]) else 0.0
+            imb    = df_day.loc[i,"imbalance"]        if not pd.isna(df_day.loc[i,"imbalance"]) else 0.0
 
             cost_c  = jpred*(half_power_kWh/(1-wheeling_loss_rate))* charge[i]
             rev_d   = jpred*(half_power_kWh*(1 - battery_loss_rate))* discharge[i]
@@ -150,7 +158,7 @@ def main():
             rev_e3  = e3pred*battery_power_kW* eprx3[i]
             rev_e3 += (half_power_kWh*(1-battery_loss_rate))* imb* eprx3[i]
 
-            slot_profit= -cost_c + rev_d + rev_e1 + rev_e3
+            slot_profit = -cost_c + rev_d + rev_e1 + rev_e3
             profit_terms.append(slot_profit)
 
         prob += pulp.lpSum(profit_terms), f"TotalProfit_Day{day_idx+1}"
@@ -161,7 +169,7 @@ def main():
 
         status = pulp.LpStatus[prob.status]
         print(f"Day {day_idx+1} solve status: {status}")
-        if status!="Optimal":
+        if status != "Optimal":
             print("Warning: Dayの最適解が見つかりませんでした (skip).")
             continue
 
@@ -176,51 +184,50 @@ def main():
         half_kwh = half_power_kWh
 
         for i in range(day_slots):
-            c_val= pulp.value(charge[i])
-            d_val= pulp.value(discharge[i])
-            e1_val= pulp.value(eprx1[i])
-            e3_val= pulp.value(eprx3[i])
+            c_val  = pulp.value(charge[i])
+            d_val  = pulp.value(discharge[i])
+            e1_val = pulp.value(eprx1[i])
+            e3_val = pulp.value(eprx3[i])
 
-            act="idle"
-            if e1_val>0.5:
-                act="EPRX1"
-            elif e3_val>0.5:
-                act="EPRX3"
-            elif c_val>0.5:
-                act="charge"
-            elif d_val>0.5:
-                act="discharge"
+            act = "idle"
+            if e1_val > 0.5:
+                act = "EPRX1"
+            elif e3_val > 0.5:
+                act = "EPRX3"
+            elif c_val > 0.5:
+                act = "charge"
+            elif d_val > 0.5:
+                act = "discharge"
 
             # 各スロットごとのPnL
-            j_a= df_day.loc[i,"JEPX_actual"] if not pd.isna(df_day.loc[i,"JEPX_actual"]) else 0.0
-            e1_a= df_day.loc[i,"EPRX1_actual"] if not pd.isna(df_day.loc[i,"EPRX1_actual"]) else 0.0
-            e3_a= df_day.loc[i,"EPRX3_actual"] if not pd.isna(df_day.loc[i,"EPRX3_actual"]) else 0.0
-            imb_a= df_day.loc[i,"imbalance"] if not pd.isna(df_day.loc[i,"imbalance"]) else 0.0
+            j_a  = df_day.loc[i,"JEPX_actual"]  if not pd.isna(df_day.loc[i,"JEPX_actual"]) else 0.0
+            e1_a = df_day.loc[i,"EPRX1_actual"] if not pd.isna(df_day.loc[i,"EPRX1_actual"]) else 0.0
+            e3_a = df_day.loc[i,"EPRX3_actual"] if not pd.isna(df_day.loc[i,"EPRX3_actual"]) else 0.0
+            imb_a= df_day.loc[i,"imbalance"]    if not pd.isna(df_day.loc[i,"imbalance"]) else 0.0
 
             # 個別PnL
             jepx_pnl = 0.0
-            eprx1_pnl= 0.0
-            eprx3_pnl= 0.0
-            wheeling_cost= 0.0
+            eprx1_pnl = 0.0
+            eprx3_pnl = 0.0
+            wheeling_cost = 0.0
 
-            if act=="charge":
-                cost= j_a*(half_kwh/(1-wheeling_loss_rate))
+            if act == "charge":
+                cost = j_a*(half_kwh/(1-wheeling_loss_rate))
                 jepx_pnl -= cost
-                wheeling_cost += cost * 0
-            elif act=="discharge":
-                rev= j_a*(half_kwh*(1-battery_loss_rate))
+            elif act == "discharge":
+                rev = j_a*(half_kwh*(1-battery_loss_rate))
                 jepx_pnl += rev
-            elif act=="EPRX1":
+            elif act == "EPRX1":
                 eprx1_pnl += e1_a*battery_power_kW
-            elif act=="EPRX3":
-                rev= e3_a*battery_power_kW
-                rev+= (half_kwh*(1-battery_loss_rate))*imb_a
+            elif act == "EPRX3":
+                rev = e3_a*battery_power_kW
+                rev += (half_kwh*(1-battery_loss_rate))*imb_a
                 eprx3_pnl += rev
 
             slot_total_pnl = jepx_pnl + eprx1_pnl + eprx3_pnl - wheeling_cost
             day_day_profit += slot_total_pnl
 
-            row={
+            row = {
                 "date": df_day.loc[i,"date"],
                 "slot": int(df_day.loc[i,"slot"]),
                 "action": act,
@@ -245,37 +252,40 @@ def main():
         total_profit += day_day_profit
         print(f"Day {day_idx+1} PL= {day_day_profit:.2f}, 累計= {total_profit:.2f}")
 
-    # 全日終了後に "wheeling費用" 計算 (概算)
-    total_charge_kWh=0.0
-    total_discharge_kWh=0.0
+    #"wheeling費用" 計算 (概算)
+    total_charge_kWh = 0.0
+    total_discharge_kWh = 0.0
     for r in all_transactions:
-        if r["action"]=="charge":
+        if r["action"] == "charge":
             total_charge_kWh += half_power_kWh
-        elif r["action"]=="discharge":
+        elif r["action"] == "discharge":
             total_discharge_kWh += half_power_kWh
-        elif r["action"]=="EPRX3":
+        elif r["action"] == "EPRX3":
             total_discharge_kWh += half_power_kWh
 
-    diff_kWh= max(0, total_charge_kWh - total_discharge_kWh)
-    monthly_fee= wheeling_base_charge*battery_power_kW + wheeling_usage_fee* diff_kWh
-    final_profit2= total_profit - monthly_fee
+    diff_kWh = max(0, total_charge_kWh - total_discharge_kWh)
+    monthly_fee = wheeling_base_charge * battery_power_kW + wheeling_usage_fee * diff_kWh
+    final_profit2 = total_profit - monthly_fee
 
     print("======================================")
     print(f"全期間(全日) 累計収益(実際価格) = {total_profit:.2f} 円")
-    print(f"推定 wheeling費用(概算) = {monthly_fee:.2f} 円")
-    print(f"最終的な純収益 = {final_profit2:.2f} 円")
+    print(f"推定 wheeling費用(概算)      = {monthly_fee:.2f} 円")
+    print(f"最終的な純収益               = {final_profit2:.2f} 円")
     print("======================================")
 
-    df_out = pd.DataFrame(all_transactions, columns=[
-        "date", "slot", "action", "battery_level_kWh",
-        "JEPX_prediction", "JEPX_actual",
-        "EPRX1_prediction", "EPRX1_actual",
-        "EPRX3_prediction", "EPRX3_actual",
-        "imbalance",
-        "JEPX_PnL", "EPRX1_PnL", "EPRX3_PnL",
-        "Wheeling_charges",
-        "Total_Daily_PnL"
-    ])
+    df_out = pd.DataFrame(
+        all_transactions,
+        columns=[
+            "date", "slot", "action", "battery_level_kWh",
+            "JEPX_prediction", "JEPX_actual",
+            "EPRX1_prediction", "EPRX1_actual",
+            "EPRX3_prediction", "EPRX3_actual",
+            "imbalance",
+            "JEPX_PnL", "EPRX1_PnL", "EPRX3_PnL",
+            "Wheeling_charges",
+            "Total_Daily_PnL"
+        ]
+    )
     df_out.to_csv(OUTPUT_CSV_PATH, index=False, encoding="utf-8")
     print(f"最適化結果 (day-by-day) を {OUTPUT_CSV_PATH} に出力しました。")
 
