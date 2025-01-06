@@ -9,7 +9,6 @@ import os
 
 def run_optimization(base_yaml, wheeling_yaml, df_all):
 
-
     # ----------------------
     # 1) 設定ファイル読込
     # ----------------------
@@ -227,19 +226,25 @@ def run_optimization(base_yaml, wheeling_yaml, df_all):
 
     # ----------------------
     # 5) Wheeling費用(概算)
+    #    (総充電量 - 内部ロス後の放電量) に従量課金
     # ----------------------
     total_charge_kWh = 0.0
     total_discharge_kWh = 0.0
     for r in all_transactions:
         if r["action"] == "charge":
-            total_charge_kWh += half_power_kWh
+            # 送電ロスは考慮しない: バッテリーに入った量
+            total_charge_kWh += (battery_power_kW * 0.5)
         elif r["action"] == "discharge":
-            total_discharge_kWh += half_power_kWh
+            # バッテリー内部ロス後の実放電量
+            actual_discharge_kWh = (battery_power_kW * 0.5) * (1 - battery_loss_rate)
+            total_discharge_kWh += actual_discharge_kWh
         elif r["action"] == "EPRX3":
-            total_discharge_kWh += half_power_kWh
+            # EPRX3 も放電を伴うので同様に
+            actual_discharge_kWh = (battery_power_kW * 0.5) * (1 - battery_loss_rate)
+            total_discharge_kWh += actual_discharge_kWh
 
-    diff_kWh = max(0, total_charge_kWh - total_discharge_kWh)
-    monthly_fee = wheeling_base_charge * battery_power_kW + wheeling_usage_fee * diff_kWh
+    usage_fee_kWh = max(0, total_charge_kWh - total_discharge_kWh)
+    monthly_fee = wheeling_base_charge * battery_power_kW + wheeling_usage_fee * usage_fee_kWh
     final_profit = total_profit - monthly_fee
 
     return all_transactions, total_profit, final_profit
@@ -250,7 +255,7 @@ def run_optimization(base_yaml, wheeling_yaml, df_all):
 ############################
 
 def main():
-    st.title("Battery Optimizer 1.01")
+    st.title("Battery Optimizer 1.01 (Streamlit版)")
 
     base_file = st.file_uploader("BASE_YML", type=["yml", "yaml"])
     wheeling_file = st.file_uploader("WHEELING_YML", type=["yml", "yaml"])
@@ -312,7 +317,6 @@ def main():
         # デフォルトで3日分: (start_date=最初の日, end_date=最初の日+2日)
         default_start = min_date
         default_end = min_date + pd.Timedelta(days=2)
-        # 万一 max_date がそれより前ならガード
         if default_end > max_date:
             default_end = max_date
 
@@ -320,14 +324,14 @@ def main():
         with col1:
             start_date = st.date_input(
                 "Start Date",
-                value=default_start,  # ←3日間の開始日をデフォルトに
+                value=default_start,
                 min_value=min_date,
                 max_value=max_date
             )
         with col2:
             end_date = st.date_input(
                 "End Date",
-                value=default_end,    # ←3日間の終了日をデフォルトに
+                value=default_end,
                 min_value=min_date,
                 max_value=max_date
             )
