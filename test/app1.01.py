@@ -42,7 +42,7 @@ def main():
 
     forecast_period = battery_cfg.get("forecast_period", 48)
 
-    region_settings = wheeling_yaml.get("Kyushu", {})
+    region_settings = wheeling_yaml.get("Kansai", {})
     hv_settings = region_settings.get("HV", {})
     wheeling_loss_rate = hv_settings.get("loss_rate", 0.03)
     wheeling_base_charge = hv_settings.get("wheeling_base_charge", 1000)
