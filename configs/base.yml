@@ -3,7 +3,7 @@ battery:
   loss_rate: 0.15
 
   # バッテリー過放電防止用最小SOC (例: 0.1 = 10%)
-  min_residual_soc: 0.1
+  min_residual_soc: 0.15
 
   # 充放電サイクル上限の設定　(上限なしの場合は0)
   cycle_setting:
@@ -16,7 +16,7 @@ battery:
   power_kW: 2000
 
   # バッテリー容量 kWh (カタログ充電容量のうち、使用可能な量を入力する)
-  capacity_kWh: 7520
+  capacity_kWh: 7000
 
   # バッテリーの劣化率 (例: 年率3%)
   annual_degradation_rate: 0.03
